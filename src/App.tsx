@@ -1,23 +1,35 @@
 import React, { useState, useEffect } from 'react';
 import { DomainType, DepthType, AnalysisResult } from './types/analyzer';
+import { AuthMode } from './types/auth';
+import { AuthProvider, useAuth } from './context/AuthContext';
 import { Header } from './components/Header';
 import { DomainSelector } from './components/DomainSelector';
 import { AnalyzerInput } from './components/AnalyzerInput';
 import { AnalysisResults } from './components/AnalysisResults';
 import { HistoryDrawer } from './components/HistoryDrawer';
 import { ExportModal } from './components/ExportModal';
-import { AlertCircle, X, ShieldAlert, Sparkles, CheckCircle2 } from 'lucide-react';
+import { AuthModal } from './components/AuthModal';
+import {
+  AlertCircle,
+  X,
+  Sparkles,
+  ShieldCheck,
+  CheckCircle2,
+  Lock,
+} from 'lucide-react';
 
 const STORAGE_KEY = 'lumina_analyzer_history_v1';
 
-export default function App() {
+function AnalyzerApp() {
+  const { user, isAuthenticated } = useAuth();
+
   const [domain, setDomain] = useState<DomainType>('auto');
   const [content, setContent] = useState<string>('');
   const [mediaData, setMediaData] = useState<string | undefined>();
   const [mediaMime, setMediaMime] = useState<string | undefined>();
   const [depth, setDepth] = useState<DepthType>('standard');
   const [customPrompt, setCustomPrompt] = useState<string>('');
-  
+
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [loadingStepText, setLoadingStepText] = useState<string>('');
   const [error, setError] = useState<string | null>(null);
@@ -26,6 +38,10 @@ export default function App() {
   const [history, setHistory] = useState<AnalysisResult[]>([]);
   const [isHistoryOpen, setIsHistoryOpen] = useState<boolean>(false);
   const [isExportOpen, setIsExportOpen] = useState<boolean>(false);
+
+  // Auth modal state
+  const [isAuthModalOpen, setIsAuthModalOpen] = useState<boolean>(false);
+  const [authModalMode, setAuthModalMode] = useState<AuthMode>('signin');
 
   // Load history from localStorage
   useEffect(() => {
@@ -43,7 +59,7 @@ export default function App() {
   const saveToHistory = (newResult: AnalysisResult) => {
     setHistory((prev) => {
       const filtered = prev.filter((item) => item.id !== newResult.id);
-      const updated = [newResult, ...filtered].slice(0, 20); // keep 20 recent
+      const updated = [newResult, ...filtered].slice(0, 25);
       try {
         localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
       } catch (e) {
@@ -81,7 +97,6 @@ export default function App() {
     setError(null);
     setLoadingStepText('Scanning input & classifying syntax...');
 
-    // Progress text simulator
     const stepTimers: NodeJS.Timeout[] = [];
     stepTimers.push(
       setTimeout(() => {
@@ -133,11 +148,10 @@ export default function App() {
       setActiveAnalysis(result);
       saveToHistory(result);
 
-      // Scroll to result smoothly
       window.scrollTo({ top: 0, behavior: 'smooth' });
     } catch (err: any) {
-      console.error(err);
-      setError(err?.message || 'Analysis failed. Please verify API configuration.');
+      console.error('Analysis execution error:', err);
+      setError(err?.message || 'Analysis failed. Please verify API connection.');
     } finally {
       stepTimers.forEach(clearTimeout);
       setIsLoading(false);
@@ -160,6 +174,11 @@ export default function App() {
     }
   };
 
+  const handleOpenAuth = (mode: AuthMode = 'signin') => {
+    setAuthModalMode(mode);
+    setIsAuthModalOpen(true);
+  };
+
   return (
     <div className="min-h-screen bg-stone-950 text-stone-100 flex flex-col font-sans">
       <Header
@@ -167,6 +186,7 @@ export default function App() {
         onOpenHistory={() => setIsHistoryOpen(true)}
         onReset={handleReset}
         hasActiveResult={Boolean(activeAnalysis)}
+        onOpenAuth={handleOpenAuth}
       />
 
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-6">
@@ -176,7 +196,7 @@ export default function App() {
             <div className="flex items-start gap-2.5">
               <AlertCircle className="w-5 h-5 text-rose-400 shrink-0 mt-0.5" />
               <div>
-                <h4 className="text-sm font-semibold text-rose-300">Analysis Error</h4>
+                <h4 className="text-sm font-semibold text-rose-300">Analysis Notice</h4>
                 <p className="text-xs text-rose-200/90 mt-0.5 leading-relaxed">{error}</p>
               </div>
             </div>
@@ -201,8 +221,51 @@ export default function App() {
         ) : (
           /* Otherwise show Input Studio */
           <div className="space-y-6 max-w-5xl mx-auto">
+            {/* Authenticated User Status Strip */}
+            {isAuthenticated && user ? (
+              <div className="p-3 bg-stone-900/60 border border-stone-800 rounded-lg flex flex-wrap items-center justify-between gap-3 text-xs">
+                <div className="flex items-center gap-2">
+                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                  <span className="text-stone-300">
+                    Logged in as <strong className="text-stone-100">{user.name}</strong> ({user.email})
+                  </span>
+                  <span className="text-stone-500 font-mono">
+                    · {user.provider === 'google' ? 'Google Account' : 'Verified Email OTP'}
+                  </span>
+                </div>
+                <div className="flex items-center gap-2 text-emerald-400 font-mono text-[11px]">
+                  <CheckCircle2 className="w-3.5 h-3.5" />
+                  <span>Dossiers auto-synced</span>
+                </div>
+              </div>
+            ) : (
+              <div className="p-3 bg-stone-900/40 border border-stone-800/80 rounded-lg flex flex-wrap items-center justify-between gap-3 text-xs">
+                <div className="flex items-center gap-2 text-stone-400">
+                  <Lock className="w-3.5 h-3.5 text-amber-400" />
+                  <span>Sign in to save analyses across sessions, download audits, and export code fixes.</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => handleOpenAuth('signin')}
+                    className="text-stone-300 hover:text-white font-medium transition-colors"
+                  >
+                    Sign In
+                  </button>
+                  <span className="text-stone-600">·</span>
+                  <button
+                    type="button"
+                    onClick={() => handleOpenAuth('signup')}
+                    className="text-amber-400 hover:text-amber-300 font-semibold transition-colors"
+                  >
+                    Sign Up with OTP
+                  </button>
+                </div>
+              </div>
+            )}
+
             {/* Hero Banner with clean editorial typography */}
-            <div className="text-center space-y-2 py-4">
+            <div className="text-center space-y-2 py-3">
               <div className="inline-flex items-center gap-2 px-3 py-1 bg-stone-900 border border-stone-800 rounded-full text-xs text-stone-400 font-mono">
                 <Sparkles className="w-3.5 h-3.5 text-amber-400" />
                 <span>Deep Forensic Diagnostic Engine</span>
@@ -264,10 +327,25 @@ export default function App() {
         />
       )}
 
-      {/* Quiet Footer */}
-      <footer className="border-t border-stone-800/60 py-6 text-center text-xs text-stone-400 font-mono">
+      {/* Authentication & OTP Modal */}
+      <AuthModal
+        isOpen={isAuthModalOpen}
+        onClose={() => setIsAuthModalOpen(false)}
+        initialMode={authModalMode}
+      />
+
+      {/* Footer */}
+      <footer className="border-t border-stone-800/60 py-6 text-center text-xs text-stone-500 font-mono">
         <p>Lumina Omni-Analyzer · Built with Google Gemini 3.8 Flash Engine</p>
       </footer>
     </div>
+  );
+}
+
+export default function App() {
+  return (
+    <AuthProvider>
+      <AnalyzerApp />
+    </AuthProvider>
   );
 }

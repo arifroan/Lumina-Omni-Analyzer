@@ -347,6 +347,278 @@ Be concise, clear, and highly practical. Avoid generic filler.`;
   }
 });
 
+// --- User Authentication & OTP Verification Store ---
+interface AuthUser {
+  id: string;
+  email: string;
+  name: string;
+  avatarUrl?: string;
+  provider: 'google' | 'email';
+  isEmailVerified: boolean;
+  password?: string;
+  createdAt: number;
+  lastLoginAt: number;
+}
+
+interface OtpEntry {
+  email: string;
+  code: string;
+  purpose: 'signup' | 'login' | 'reset';
+  expiresAt: number;
+  attempts: number;
+}
+
+const usersStore = new Map<string, AuthUser>();
+const otpStore = new Map<string, OtpEntry>();
+const sessionsStore = new Map<string, string>(); // token -> email
+
+// Seed default developer account for testing
+const defaultUser: AuthUser = {
+  id: 'usr_dev_google_1',
+  email: 'mdarifarman2005@gmail.com',
+  name: 'Md Arif Arman',
+  avatarUrl: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=100&h=100&fit=crop&crop=faces',
+  provider: 'google',
+  isEmailVerified: true,
+  createdAt: Date.now() - 86400000,
+  lastLoginAt: Date.now(),
+};
+usersStore.set(defaultUser.email.toLowerCase(), defaultUser);
+
+function sanitizeUser(user: AuthUser) {
+  const { password, ...safe } = user;
+  return safe;
+}
+
+// 1. Send OTP Endpoint
+app.post('/api/auth/send-otp', (req: Request, res: Response) => {
+  try {
+    const { email, purpose = 'signup' } = req.body;
+    if (!email || !email.includes('@')) {
+      res.status(400).json({ error: 'Valid email address is required.' });
+      return;
+    }
+
+    const normalizedEmail = email.trim().toLowerCase();
+
+    // Generate secure 6-digit OTP
+    const code = Math.floor(100000 + Math.random() * 900000).toString();
+    const expiresAt = Date.now() + 10 * 60 * 1000; // 10 minutes
+
+    const key = `${normalizedEmail}_${purpose}`;
+    otpStore.set(key, {
+      email: normalizedEmail,
+      code,
+      purpose,
+      expiresAt,
+      attempts: 0,
+    });
+
+    console.log(`[OTP System] Generated code for ${normalizedEmail} (${purpose}): ${code}`);
+
+    res.json({
+      success: true,
+      message: `Verification code dispatched to ${normalizedEmail}`,
+      otpCode: code, // Included for instant sandbox testing
+      expiresInSeconds: 600,
+    });
+  } catch (err: any) {
+    console.error('Send OTP error:', err);
+    res.status(500).json({ error: 'Failed to dispatch verification code.' });
+  }
+});
+
+// 2. Verify OTP Endpoint
+app.post('/api/auth/verify-otp', (req: Request, res: Response) => {
+  try {
+    const { email, code, purpose = 'signup', name, password } = req.body;
+    if (!email || !code) {
+      res.status(400).json({ error: 'Email and verification code are required.' });
+      return;
+    }
+
+    const normalizedEmail = email.trim().toLowerCase();
+    const key = `${normalizedEmail}_${purpose}`;
+    const record = otpStore.get(key);
+
+    if (!record) {
+      res.status(400).json({ error: 'No active verification code found for this email. Please request a new one.' });
+      return;
+    }
+
+    if (Date.now() > record.expiresAt) {
+      otpStore.delete(key);
+      res.status(400).json({ error: 'Verification code has expired. Please request a new one.' });
+      return;
+    }
+
+    if (record.code !== code.trim()) {
+      record.attempts += 1;
+      if (record.attempts >= 5) {
+        otpStore.delete(key);
+        res.status(400).json({ error: 'Maximum verification attempts exceeded. Code has been invalidated.' });
+        return;
+      }
+      res.status(400).json({ error: `Invalid verification code. ${5 - record.attempts} attempts remaining.` });
+      return;
+    }
+
+    // Code verified! Remove from store
+    otpStore.delete(key);
+
+    let user = usersStore.get(normalizedEmail);
+    if (!user) {
+      user = {
+        id: `usr_${Math.random().toString(36).substring(2, 9)}`,
+        email: normalizedEmail,
+        name: name?.trim() || normalizedEmail.split('@')[0],
+        provider: 'email',
+        isEmailVerified: true,
+        password: password || undefined,
+        createdAt: Date.now(),
+        lastLoginAt: Date.now(),
+      };
+      usersStore.set(normalizedEmail, user);
+    } else {
+      user.isEmailVerified = true;
+      user.lastLoginAt = Date.now();
+      if (name?.trim()) user.name = name.trim();
+      if (password) user.password = password;
+      usersStore.set(normalizedEmail, user);
+    }
+
+    const token = `tok_${Math.random().toString(36).substring(2)}_${Date.now()}`;
+    sessionsStore.set(token, normalizedEmail);
+
+    res.json({
+      success: true,
+      user: sanitizeUser(user),
+      token,
+      message: 'Authentication verified successfully.',
+    });
+  } catch (err: any) {
+    console.error('Verify OTP error:', err);
+    res.status(500).json({ error: 'Failed to verify code.' });
+  }
+});
+
+// 3. Google Sign-In Endpoint
+app.post('/api/auth/google', (req: Request, res: Response) => {
+  try {
+    const { email, name, avatarUrl } = req.body;
+    const normalizedEmail = (email || 'user@gmail.com').trim().toLowerCase();
+
+    let user = usersStore.get(normalizedEmail);
+    if (!user) {
+      user = {
+        id: `usr_${Math.random().toString(36).substring(2, 9)}`,
+        email: normalizedEmail,
+        name: name || normalizedEmail.split('@')[0],
+        avatarUrl: avatarUrl || undefined,
+        provider: 'google',
+        isEmailVerified: true,
+        createdAt: Date.now(),
+        lastLoginAt: Date.now(),
+      };
+      usersStore.set(normalizedEmail, user);
+    } else {
+      user.lastLoginAt = Date.now();
+      if (name) user.name = name;
+      if (avatarUrl) user.avatarUrl = avatarUrl;
+      usersStore.set(normalizedEmail, user);
+    }
+
+    const token = `tok_${Math.random().toString(36).substring(2)}_${Date.now()}`;
+    sessionsStore.set(token, normalizedEmail);
+
+    res.json({
+      success: true,
+      user: sanitizeUser(user),
+      token,
+    });
+  } catch (err: any) {
+    console.error('Google auth error:', err);
+    res.status(500).json({ error: 'Failed to authenticate with Google.' });
+  }
+});
+
+// 4. Password Login Endpoint
+app.post('/api/auth/login-password', (req: Request, res: Response) => {
+  try {
+    const { email, password } = req.body;
+    if (!email || !password) {
+      res.status(400).json({ error: 'Email and password are required.' });
+      return;
+    }
+
+    const normalizedEmail = email.trim().toLowerCase();
+    const user = usersStore.get(normalizedEmail);
+
+    if (!user) {
+      res.status(400).json({ error: 'No account found with this email. Please sign up or request an OTP code.' });
+      return;
+    }
+
+    if (user.password && user.password !== password) {
+      res.status(401).json({ error: 'Incorrect password. You can also sign in via Email OTP.' });
+      return;
+    }
+
+    user.lastLoginAt = Date.now();
+    usersStore.set(normalizedEmail, user);
+
+    const token = `tok_${Math.random().toString(36).substring(2)}_${Date.now()}`;
+    sessionsStore.set(token, normalizedEmail);
+
+    res.json({
+      success: true,
+      user: sanitizeUser(user),
+      token,
+    });
+  } catch (err: any) {
+    console.error('Password login error:', err);
+    res.status(500).json({ error: 'Login failed.' });
+  }
+});
+
+// 5. Check Current User Session
+app.get('/api/auth/me', (req: Request, res: Response) => {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    res.status(401).json({ error: 'No authentication token provided.' });
+    return;
+  }
+
+  const token = authHeader.substring(7);
+  const email = sessionsStore.get(token);
+  if (!email) {
+    res.status(401).json({ error: 'Invalid or expired session token.' });
+    return;
+  }
+
+  const user = usersStore.get(email);
+  if (!user) {
+    res.status(401).json({ error: 'User record not found.' });
+    return;
+  }
+
+  res.json({
+    success: true,
+    user: sanitizeUser(user),
+  });
+});
+
+// 6. Logout Endpoint
+app.post('/api/auth/logout', (req: Request, res: Response) => {
+  const authHeader = req.headers.authorization;
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    const token = authHeader.substring(7);
+    sessionsStore.delete(token);
+  }
+  res.json({ success: true, message: 'Logged out successfully.' });
+});
+
+
 // Mount Vite or serve static build
 async function startServer() {
   const isProd = process.env.NODE_ENV === 'production';
