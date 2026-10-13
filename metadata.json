@@ -1,0 +1,7 @@
+{
+  "name": "Synthetix Omni-Analyzer",
+  "description": "Multi-modal AI intelligence engine for in-depth analysis of code, prose, datasets, contracts, visual media, and web copy.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
+
